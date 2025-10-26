@@ -1,10 +1,11 @@
 import torch
 import torch.nn as nn
 
-from transformers import Glm4MoeConfig
+from transformers.models.glm4_moe import Glm4MoeConfig
 
 from nanovllm.layers.embed_head import ParallelLMHead, VocabParallelEmbedding
 from nanovllm.layers.layernorm import RMSNorm
+from .decode_layer import Glm4MoeDecoderLayer
 
 
 class Glm4MoeModel(nn.Module):
@@ -12,7 +13,8 @@ class Glm4MoeModel(nn.Module):
         super().__init__()
         self.embed_tokens = VocabParallelEmbedding(config.vocab_size, config.hidden_size)
         # self.layers = nn.ModuleList([Qwen3DecoderLayer(config) for _ in range(config.num_hidden_layers)])
-        self.layers = nn.ModuleList([])
+        self.layers = nn.ModuleList([Glm4MoeDecoderLayer(config) for _ in range(config.num_hidden_layers)])
+        #self.layers = nn.ModuleList([])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
@@ -22,7 +24,7 @@ class Glm4MoeModel(nn.Module):
     ) -> torch.Tensor:
         hidden_states = self.embed_tokens(input_ids)
         # print(f"11111 {hidden_states.shape=}")
-        # residual = None
+        residual = None
         for layer in self.layers:
             hidden_states, residual = layer(positions, hidden_states, residual)
             # pass
