@@ -32,6 +32,15 @@ class Glm4MoeDecoderLayer(nn.Module):
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
+    def load_weights(self, state_dict: dict[str, torch.Tensor], prefix: str):
+        """调用子模块的 load_weights 方法"""
+        self.input_layernorm.weight.data.copy_(state_dict[f"{prefix}.input_layernorm.weight"])
+        self.post_attention_layernorm.weight.data.copy_(state_dict[f"{prefix}.post_attention_layernorm.weight"])
+        
+        self.self_attn.load_weights(state_dict, f"{prefix}.self_attn")
+        self.moe.load_weights(state_dict, f"{prefix}.mlp") 
+
+
     def forward(
         self,
         positions: torch.Tensor,
@@ -46,4 +55,11 @@ class Glm4MoeDecoderLayer(nn.Module):
         # hidden_states = self.post_attention_layernorm(hidden_states)
         # hidden_states = self.moe(hidden_states)
         # hidden_states = residual + hidden_states
+        if residual is None:
+            hidden_states, residual = self.input_layernorm(hidden_states), hidden_states
+        else:
+            hidden_states, residual = self.input_layernorm(hidden_states, residual)       
+        hidden_states = self.self_attn(hidden_states, positions)        
+        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)        
+        hidden_states = self.moe(hidden_states)
         return hidden_states, residual
