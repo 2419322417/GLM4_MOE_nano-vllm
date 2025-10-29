@@ -1,9 +1,10 @@
 import torch
 import torch.nn as nn
-from safetensors import safe_open
+from safetensors import load_file
 from transformers.models.glm4_moe import Glm4MoeConfig
-import torch.distributed as dist
+#import torch.distributed as dist
 
+from nanovllm.distributed.parallel_state import get_tp_group
 from nanovllm.layers.rotary_embedding import get_rope
 from nanovllm.layers.attention import Attention
 from nanovllm.layers.RMSNorm import RMSNorm
@@ -12,7 +13,7 @@ from nanovllm.layers.linear import QKVParallelLinear, RowParallelLinear
 class Glm4MoeAttention(nn.Module):
     def __init__(self, config: Glm4MoeConfig):
         super().__init__()
-        tp_size = dist.get_world_size()
+        tp_size = get_tp_group().world_size
         self.config = config
         self.hidden_size = config.hidden_size
         self.total_num_heads = config.num_attention_heads
@@ -25,6 +26,7 @@ class Glm4MoeAttention(nn.Module):
         self.kv_size = self.num_kv_heads * self.head_dim
         self.scaling = self.head_dim ** -0.5
         
+
         # 定义 QKV 融合投影层
         self.qkv_proj = QKVParallelLinear(
             self.hidden_size,
@@ -47,7 +49,7 @@ class Glm4MoeAttention(nn.Module):
             self.k_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
 
         # Rotary Embedding
-        partial_rotary_factor = getattr(config, "partial_rotary_factor", 1.0)
+        partial_rotary_factor = getattr(config, "partial_rotary_factor", 0.5)
         rope_scaling = getattr(config, "rope_scaling", None)
         self.rotary_emb = get_rope(
             self.head_dim,
@@ -56,29 +58,94 @@ class Glm4MoeAttention(nn.Module):
             base=config.rope_theta,
             rope_scaling=rope_scaling,
         )
-
+        cache_config=None
+        quant_config=None
+        prefix=" "
+#todo attention
         self.attn = Attention(
             self.num_heads,
             self.head_dim,
             self.scaling,
             self.num_kv_heads,
+            cache_config=cache_config,
+            quant_config=quant_config,
+            prefix=f"{prefix}.attn",
         )
 
 
-    # def load_weights(self, state_dict: dict[str, torch.Tensor], prefix: str):
-    #     """从 state_dict 加载自己的权重,prefix 是权重在 state_dict 中的前缀。"""
-    #     qkv_weight_name = f"{prefix}.qkv_proj.weight"
-    #     if qkv_weight_name in state_dict:
-    #         self.qkv_proj.weight.data.copy_(state_dict[qkv_weight_name])
+    def load_weights(self, path: str, prefix: str):
+        """
+        从 Safetensors 文件加载权重，并根据张量并行（TP）进行拆分。
+        Args:
+            path (str): Safetensors 权重文件的路径。
+            prefix (str): 当前注意力层在权重文件中的前缀 (例如 "transformer.layers.0.self_attn")。
+        """
+        state_dict = load_file(path, device="cpu")
+        tp_group = get_tp_group()
+        tp_rank = tp_group.rank
+        tp_size = tp_group.world_size
 
-    #     if self.config.attention_bias:
-    #         qkv_bias_name = f"{prefix}.qkv_proj.bias"
-    #         if qkv_bias_name in state_dict:
-    #             self.qkv_proj.bias.data.copy_(state_dict[qkv_bias_name])
+        # 1. 加载并拆分 QKV 权重
+        qkv_weight_key = f"{prefix}.qkv_proj.weight"
+        if qkv_weight_key in state_dict:
+            # 获取完整的 QKV 权重
+            qkv_weight = state_dict[qkv_weight_key]
+            
+            # 计算 Q, K, V 各自的总维度
+            total_q_dim = self.total_num_heads * self.head_dim
+            total_kv_dim = self.total_num_kv_heads * self.head_dim
 
-    #     o_proj_weight_name = f"{prefix}.o_proj.weight"
-    #     if o_proj_weight_name in state_dict:
-    #         self.o_proj.weight.data.copy_(state_dict[o_proj_weight_name])
+            # 从完整权重中分离出 Q, K, V
+            q_weight_global = qkv_weight[:total_q_dim]
+            k_weight_global = qkv_weight[total_q_dim : total_q_dim + total_kv_dim]
+            v_weight_global = qkv_weight[total_q_dim + total_kv_dim:]
+
+            # 按 TP rank 拆分 Q, K, V 各自的权重
+            q_weight_tp = q_weight_global.split(self.q_size, dim=0)[tp_rank]
+            k_weight_tp = k_weight_global.split(self.kv_size, dim=0)[tp_rank]
+            v_weight_tp = v_weight_global.split(self.kv_size, dim=0)[tp_rank]
+
+            # 拼接成当前 rank 所需的 QKV 权重
+            qkv_weight_tp = torch.cat([q_weight_tp, k_weight_tp, v_weight_tp], dim=0)
+            self.qkv_proj.weight.data.copy_(qkv_weight_tp)
+
+        # 2. 加载并拆分 QKV 偏置 (如果存在)
+        if self.config.attention_bias:
+            qkv_bias_key = f"{prefix}.qkv_proj.bias"
+            if qkv_bias_key in state_dict:
+                qkv_bias = state_dict[qkv_bias_key]
+                total_q_dim = self.total_num_heads * self.head_dim
+                total_kv_dim = self.total_num_kv_heads * self.head_dim
+
+                q_bias_global = qkv_bias[:total_q_dim]
+                k_bias_global = qkv_bias[total_q_dim : total_q_dim + total_kv_dim]
+                v_bias_global = qkv_bias[total_q_dim + total_kv_dim:]
+
+                q_bias_tp = q_bias_global.split(self.q_size, dim=0)[tp_rank]
+                k_bias_tp = k_bias_global.split(self.kv_size, dim=0)[tp_rank]
+                v_bias_tp = v_bias_global.split(self.kv_size, dim=0)[tp_rank]
+
+                qkv_bias_tp = torch.cat([q_bias_tp, k_bias_tp, v_bias_tp], dim=0)
+                self.qkv_proj.bias.data.copy_(qkv_bias_tp)
+
+        # 3. 加载并拆分输出投影 (o_proj) 权重
+        o_proj_weight_key = f"{prefix}.o_proj.weight"
+        if o_proj_weight_key in state_dict:
+            o_proj_weight_global = state_dict[o_proj_weight_key]
+            # RowParallelLinear 按列拆分，即按 dim=1 拆分
+            chunk_size = o_proj_weight_global.shape[1] // tp_size
+            o_proj_weight_tp = o_proj_weight_global.split(chunk_size, dim=1)[tp_rank]
+            self.o_proj.weight.data.copy_(o_proj_weight_tp)
+
+        # 4. 加载 QK Norm 权重 (如果存在)
+        if self.use_qk_norm:
+            q_norm_key = f"{prefix}.q_norm.weight"
+            if q_norm_key in state_dict:
+                self.q_norm.weight.data.copy_(state_dict[q_norm_key])
+            
+            k_norm_key = f"{prefix}.k_norm.weight"
+            if k_norm_key in state_dict:
+                self.k_norm.weight.data.copy_(state_dict[k_norm_key])
 
     def forward(
         self,
