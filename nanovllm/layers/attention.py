@@ -48,6 +48,9 @@ class Attention(nn.Module):
         head_dim,
         scale,
         num_kv_heads,
+        cache_config=None,
+        quant_config=None,
+        prefix=None,
     ):
         super().__init__()
         self.num_heads = num_heads
