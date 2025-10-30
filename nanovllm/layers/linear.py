@@ -2,7 +2,16 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import torch.distributed as dist
+import os
 
+# 邪修补丁：单卡伪分布式环境
+if not dist.is_initialized():
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = "29500"
+    try:
+        dist.init_process_group(backend="gloo", rank=0, world_size=1)
+    except Exception:
+        pass
 
 def divide(numerator, denominator):
     assert numerator % denominator == 0
@@ -21,7 +30,9 @@ class LinearBase(nn.Module):
         super().__init__()
         self.tp_dim = tp_dim
         self.tp_rank = dist.get_rank()
+
         self.tp_size = dist.get_world_size()
+
         self.weight = nn.Parameter(torch.empty(output_size, input_size))
         self.weight.weight_loader = self.weight_loader
         if bias:
@@ -60,6 +71,8 @@ class ColumnParallelLinear(LinearBase):
         bias: bool = False,
     ):
         tp_size = dist.get_world_size()
+
+
         super().__init__(input_size, divide(output_size, tp_size), bias, 0)
 
     def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor):
@@ -104,6 +117,7 @@ class QKVParallelLinear(ColumnParallelLinear):
         bias: bool = False,
     ):
         tp_size = dist.get_world_size()
+
         total_num_kv_heads = total_num_kv_heads or total_num_heads
         self.head_size = head_size
         self.num_heads = divide(total_num_heads, tp_size)
@@ -137,6 +151,7 @@ class RowParallelLinear(LinearBase):
         bias: bool = False,
     ):
         tp_size = dist.get_world_size()
+
         super().__init__(divide(input_size, tp_size), output_size, bias, 1)
 
     def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor):
