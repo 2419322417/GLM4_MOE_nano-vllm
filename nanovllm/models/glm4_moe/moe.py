@@ -1,57 +1,79 @@
+from sys import prefix
 import torch
 import torch.nn as nn
-#下面是从 transformers 库的 models.glm4_moe 模块中导入 Glm4MoeConfig 类，主要目的是加载或配置 GLM-4 MoE 模型的参数。
 from transformers.models.glm4_moe import Glm4MoeConfig
-from typing import Optional
-from .mlp import Glm4MoeMLP #好像没用
 
+from .mlp import Glm4MoeMLP
 
-#SiluAndMul对VLLM有依赖，需要重写，重写如下。
-class SiluAndMul(nn.Module):
-    def forward(self, x):
-        # x shape: [..., 2 * intermediate_size]
-        gate, up = x.chunk(2, dim=-1)
-        return torch.nn.functional.silu(gate) * up
-    
+def get_tensor_model_parallel_world_size():
+    return 1  # 假设没有张量并行
 
+def get_ep_group():
+    class MockGroup:
+        def rank(self): return 0
+        def size(self): return 1
+        def device_group(self): return self
+    return MockGroup()
 
-class Glm4MoeMLP(nn.Module):
-
-    def __init__(
-        self,
-        hidden_size: int,
-        intermediate_size: int,
-        hidden_act: str,
-        # nano版 替换QuantizationConfig对vllm的依赖。
-        quant_config: Optional[object] = None,
-        reduce_results: bool = True,
-        prefix: str = "",
-    ) -> None:
+class Glm4MoeMoE(nn.Module):
+    def __init__(self, config: Glm4MoeConfig):
         super().__init__()
+        # self.tp_size = get_tensor_model_parallel_world_size()  #问题：为什么加载专家会爆，专家在哪里加载的
+        # self.ep_group = get_ep_group().device_group
+        self.ep_rank = self.ep_group.rank()
+        self.ep_size = self.ep_group.size()
+        self.routed_scaling_factor = config.routed_scaling_factor 
+        self.n_routed_experts: int = config.n_routed_experts   #问题
+        self.n_shared_experts: int = config.n_shared_experts
 
-        #nano 替换MergedColumnParallelLinear依赖
-        self.gate_up_proj = nn.Linear(
-            hidden_size,             # 输入维度
-            2 * intermediate_size,   # 输出维度 = 两倍中间层
+        self.gate_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.down_proj = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
+        self.act_fn = nn.SiLU()
+
+        # 门控网络，给token分配专家
+        self.gate = nn.Linear(
+            config.hidden_size,
+            config.n_routed_experts,
             bias=False
         )
 
-        # nano版 替换RowParallelLinear依赖
-        self.down_proj = nn.Linear(# ？？？是否要去看nn.Linear的具体实现，感觉对这个不是很理解，只会调用。
-            intermediate_size, 
-            hidden_size, 
-            bias=False
+        self.experts = nn.ModuleList([Glm4MoeMLP(config) for _ in range(config.n_routed_experts)])
+
+        if self.n_shared_experts > 0:
+            # 共享专家的中间层大小通常是单个专家的n_shared_experts倍 
+            shared_intermediate_size = config.moe_intermediate_size * self.n_shared_experts
+            self.shared_experts = Glm4MoeMLP(config, shared_intermediate_size)
+        else:
+            self.shared_experts = None
+
+
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        num_tokens, hidden_dim = hidden_states.shape()
+        hidden_states = hidden_states.view(-1, hidden_dim)
+        
+        router_logits = self.gate(hidden_states.to(dtype=torch.float32))
+
+        fused_moe_out = self.experts(
+            hidden_states=hidden_states, router_logits=router_logits
         )
 
-        # 激活函数检查，为了代码健壮性，实则没啥用，就是为了防止传入奇怪的激活函数。
-        if hidden_act.lower() != "silu":
-            raise ValueError(
-                f"Unsupported activation: {hidden_act}. Only silu is supported for now."
+        if self.shared_experts is not None:
+            shared_output, final_hidden_states = fused_moe_out
+            assert shared_output is not None
+            final_hidden_states = (
+                final_hidden_states * self.routed_scaling_factor + shared_output
             )
+        else:
+            final_hidden_states = fused_moe_out * self.routed_scaling_factor
 
-    def forward(self, x):
-        gate_up  = self.gate_up_proj(x) #？？？这里占位符是否要删除，咱们后面不是还要跑多机么，我看这个好像是为了多卡用的？
-        act_x = self.act_fn(gate_up)
-        ret_x = self.down_proj(act_x)
+        # 需要改laier
+        # if self.tp_size > 1:
+        #     final_hidden_states = self.experts.maybe_all_reduce_tensor_model_parallel(
+        #         final_hidden_states
+        #     )
+        # return final_hidden_states.view(num_tokens, hidden_dim)
 
-        return ret_x
+
+        return hidden_states.view(num_tokens, hidden_dim)
