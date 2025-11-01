@@ -90,7 +90,7 @@ class Glm4MoeAttention(nn.Module):
         """
         import os
         from safetensors import safe_open
-        print(f"Loading weights from directory {path} with prefix {prefix}")
+        #print(f"Loading weights from directory {path} with prefix {prefix}")
         # print(self.total_num_heads)#96
         # print(self.head_dim)
         # print(self.hidden_size)#4096
@@ -108,7 +108,7 @@ class Glm4MoeAttention(nn.Module):
                                 state_dict[key] = f.get_tensor(key)
         else:
             # 如果是单个文件，直接加载
-            print(f"Loading weights from single file {path}")
+            #print(f"Loading weights from single file {path}")
             state_dict = load_file(path, device="cpu")
 
         if not state_dict:
@@ -136,7 +136,7 @@ class Glm4MoeAttention(nn.Module):
 
             # 拼接成当前 rank 所需的 QKV 权重
             qkv_weight_tp = torch.cat([q_weight_tp, k_weight_tp, v_weight_tp], dim=0)
-            self.qkv_proj.weight.data.copy_(qkv_weight_tp.to(self.qkv_proj.weight.device))
+            self.qkv_proj.weight.data.copy_(qkv_weight_tp)
         
         # 2. 加载并拆分 QKV 偏置 (如果存在)
         if self.config.attention_bias:
@@ -153,7 +153,7 @@ class Glm4MoeAttention(nn.Module):
                 v_bias_tp = v_bias_global.split(self.kv_size, dim=0)[tp_rank]
 
                 qkv_bias_tp = torch.cat([q_bias_tp, k_bias_tp, v_bias_tp], dim=0)
-                self.qkv_proj.bias.data.copy_(qkv_bias_tp.to(self.qkv_proj.bias.device))
+                self.qkv_proj.bias.data.copy_(qkv_bias_tp)
 
         # 3. 加载并拆分输出投影 (o_proj) 权重
         o_proj_weight_key = f"{prefix}.o_proj.weight"
@@ -162,17 +162,17 @@ class Glm4MoeAttention(nn.Module):
             # RowParallelLinear 按列拆分，即按 dim=1 拆分
             chunk_size = o_proj_weight_global.shape[1] // tp_size
             o_proj_weight_tp = o_proj_weight_global.split(chunk_size, dim=1)[tp_rank]
-            self.o_proj.weight.data.copy_(o_proj_weight_tp.to(self.o_proj.weight.device))
+            self.o_proj.weight.data.copy_(o_proj_weight_tp)
 
         # 4. 加载 QK Norm 权重 (如果存在)
         if self.use_qk_norm:
             q_norm_key = f"{prefix}.q_norm.weight"
             if q_norm_key in state_dict:
-                self.q_norm.weight.data.copy_(state_dict[q_norm_key].to(self.q_norm.weight.device))
+                self.q_norm.weight.data.copy_(state_dict[q_norm_key])
             
             k_norm_key = f"{prefix}.k_norm.weight"
             if k_norm_key in state_dict:
-                self.k_norm.weight.data.copy_(state_dict[k_norm_key].to(self.k_norm.weight.device))
+                self.k_norm.weight.data.copy_(state_dict[k_norm_key])
 
     def forward(
         self,
