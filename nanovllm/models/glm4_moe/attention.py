@@ -136,8 +136,10 @@ class Glm4MoeAttention(nn.Module):
 
             # 拼接成当前 rank 所需的 QKV 权重
             qkv_weight_tp = torch.cat([q_weight_tp, k_weight_tp, v_weight_tp], dim=0)
+
             # print(qkv_weight_tp.shape)
             # print(self.qkv_proj.weight.shape)
+
             self.qkv_proj.weight.data.copy_(qkv_weight_tp)
         
         # 2. 加载并拆分 QKV 偏置 (如果存在)

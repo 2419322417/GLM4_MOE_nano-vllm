@@ -9,8 +9,12 @@ def main():
     torch.set_default_dtype(torch.float16)
 
     # init_distributed_environment(world_size=1, rank=0)
+
     model = "/data/model/ZhipuAI/GLM-4.5-Air"
     # model = "/data/model/QuantTrio/GLM-4.6-AWQ"
+
+
+
     # model_index_file = f"{model}/model.safetensors.index.json" #question
     config = AutoConfig.from_pretrained(model)
     #config = Glm4MoeConfig(config)
