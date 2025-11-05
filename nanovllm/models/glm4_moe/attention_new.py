@@ -8,10 +8,10 @@ from nanovllm.distributed.parallel_state import get_tp_group
 from nanovllm.layers.rotary_embedding import get_rope
 from nanovllm.layers.attention import Attention
 from nanovllm.layers.RMSNorm import RMSNorm
-from nanovllm.layers.linear import QKVParallelLinear, RowParallelLinear
+# from nanovllm.layers.linear_awq import QKVParallelLinear, RowParallelLinear
 
 class Glm4MoeAttention(nn.Module):
-    def __init__(self, config: Glm4MoeConfig,prefix: str = ""):
+    def __init__(self, config: Glm4MoeConfig,prefix: str = "",quant_config: dict | None = None):
         super().__init__()
         tp_size = get_tp_group().world_size
         self.config = config
@@ -33,23 +33,49 @@ class Glm4MoeAttention(nn.Module):
         self.q_size = self.num_heads * self.head_dim
         self.kv_size = self.num_kv_heads * self.head_dim
         self.scaling = self.head_dim ** -0.5
-        
+        self.qkv_bias=config.attention_bias
 
-        # 定义 QKV 融合投影层
-        self.qkv_proj = QKVParallelLinear(
+        # self.quant_config=config.quantization_config
+
+        # 定义 QKV 融合投影层和输出投影层
+        if quant_config is None:
+            from nanovllm.layers.linear import QKVParallelLinear, RowParallelLinear
+            self.qkv_proj = QKVParallelLinear(
             self.hidden_size,
             self.head_dim,
             self.total_num_heads,
             self.total_num_kv_heads,
-            bias=config.attention_bias
+            bias=self.qkv_bias,
         )
         
-        # 定义输出投影层
-        self.o_proj = RowParallelLinear(
-            self.total_num_heads * self.head_dim, 
-            self.hidden_size, 
-            bias=False
-        )
+        
+            self.o_proj = RowParallelLinear(
+                self.total_num_heads * self.head_dim, 
+                self.hidden_size, 
+                bias=False
+            )
+        else:
+            from nanovllm.layers.linear_awq import QKVParallelLinear, RowParallelLinear
+            
+            self.qkv_proj = QKVParallelLinear(
+            self.hidden_size,
+            self.head_dim,
+            self.total_num_heads,
+            self.total_num_kv_heads,
+            bias=self.qkv_bias,
+            quant_config=quant_config,
+            
+            )
+        
+        
+            self.o_proj = RowParallelLinear(
+                self.total_num_heads * self.head_dim, 
+                self.hidden_size, 
+                bias=False,
+                quant_config=quant_config,
+                
+            )
+        
         # 根据配置决定是否使用 QK Norm
         self.use_qk_norm = getattr(config, "use_qk_norm", False)
         if self.use_qk_norm:
@@ -67,7 +93,7 @@ class Glm4MoeAttention(nn.Module):
             rope_scaling=rope_scaling,
         )
         cache_config=None
-        quant_config=None
+        # quant_config=None
         # prefix=" "
 #todo attention
         self.attn = Attention(
@@ -136,8 +162,8 @@ class Glm4MoeAttention(nn.Module):
 
             # 拼接成当前 rank 所需的 QKV 权重
             qkv_weight_tp = torch.cat([q_weight_tp, k_weight_tp, v_weight_tp], dim=0)
-            # print(qkv_weight_tp.shape)
-            # print(self.qkv_proj.weight.shape)
+            print(qkv_weight_tp.shape)
+            print(self.qkv_proj.weight.shape)
             self.qkv_proj.weight.data.copy_(qkv_weight_tp)
         
         # 2. 加载并拆分 QKV 偏置 (如果存在)
