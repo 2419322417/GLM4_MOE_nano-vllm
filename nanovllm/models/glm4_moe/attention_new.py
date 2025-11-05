@@ -143,54 +143,104 @@ class Glm4MoeAttention(nn.Module):
         tp_group = get_tp_group()
         tp_rank = tp_group.rank
         tp_size = tp_group.world_size
-
-        # 1. 加载并拆分 QKV 权重
-        q_weight_key = f"{prefix}.q_proj.weight"
-        k_weight_key = f"{prefix}.k_proj.weight"
-        v_weight_key = f"{prefix}.v_proj.weight"
-
-        if q_weight_key in state_dict and k_weight_key in state_dict and v_weight_key in state_dict:
-            # 分别加载 Q, K, V 权重
-            q_weight_global = state_dict[q_weight_key]
-            k_weight_global = state_dict[k_weight_key]
-            v_weight_global = state_dict[v_weight_key]
-
-            # 按 TP rank 拆分 Q, K, V 各自的权重
-            q_weight_tp = q_weight_global.split(self.q_size, dim=0)[tp_rank]
-            k_weight_tp = k_weight_global.split(self.kv_size, dim=0)[tp_rank]
-            v_weight_tp = v_weight_global.split(self.kv_size, dim=0)[tp_rank]
-
-            # 拼接成当前 rank 所需的 QKV 权重
-            qkv_weight_tp = torch.cat([q_weight_tp, k_weight_tp, v_weight_tp], dim=0)
-            print(qkv_weight_tp.shape)
-            print(self.qkv_proj.weight.shape)
-            self.qkv_proj.weight.data.copy_(qkv_weight_tp)
         
-        # 2. 加载并拆分 QKV 偏置 (如果存在)
-        if self.config.attention_bias:
-            q_bias_key = f"{prefix}.q_proj.bias"
-            k_bias_key = f"{prefix}.k_proj.bias"
-            v_bias_key = f"{prefix}.v_proj.bias"
-            if q_bias_key in state_dict and k_bias_key in state_dict and v_bias_key in state_dict:
-                q_bias_global = state_dict[q_bias_key]
-                k_bias_global = state_dict[k_bias_key]
-                v_bias_global = state_dict[v_bias_key]
+        if self.quant_config is None:
 
-                q_bias_tp = q_bias_global.split(self.q_size, dim=0)[tp_rank]
-                k_bias_tp = k_bias_global.split(self.kv_size, dim=0)[tp_rank]
-                v_bias_tp = v_bias_global.split(self.kv_size, dim=0)[tp_rank]
+            # 1. 加载并拆分 QKV 权重
+            q_weight_key = f"{prefix}.q_proj.weight"
+            k_weight_key = f"{prefix}.k_proj.weight"
+            v_weight_key = f"{prefix}.v_proj.weight"
 
-                qkv_bias_tp = torch.cat([q_bias_tp, k_bias_tp, v_bias_tp], dim=0)
-                self.qkv_proj.bias.data.copy_(qkv_bias_tp)
+            if q_weight_key in state_dict and k_weight_key in state_dict and v_weight_key in state_dict:
+                # 分别加载 Q, K, V 权重
+                q_weight_global = state_dict[q_weight_key]
+                k_weight_global = state_dict[k_weight_key]
+                v_weight_global = state_dict[v_weight_key]
 
-        # 3. 加载并拆分输出投影 (o_proj) 权重
-        o_proj_weight_key = f"{prefix}.o_proj.weight"
-        if o_proj_weight_key in state_dict:
-            o_proj_weight_global = state_dict[o_proj_weight_key]
-            # RowParallelLinear 按列拆分，即按 dim=1 拆分
-            chunk_size = o_proj_weight_global.shape[1] // tp_size
-            o_proj_weight_tp = o_proj_weight_global.split(chunk_size, dim=1)[tp_rank]
-            self.o_proj.weight.data.copy_(o_proj_weight_tp)
+                # 按 TP rank 拆分 Q, K, V 各自的权重
+                q_weight_tp = q_weight_global.split(self.q_size, dim=0)[tp_rank]
+                k_weight_tp = k_weight_global.split(self.kv_size, dim=0)[tp_rank]
+                v_weight_tp = v_weight_global.split(self.kv_size, dim=0)[tp_rank]
+
+                # 拼接成当前 rank 所需的 QKV 权重
+                qkv_weight_tp = torch.cat([q_weight_tp, k_weight_tp, v_weight_tp], dim=0)
+                print(qkv_weight_tp.shape)
+                print(self.qkv_proj.weight.shape)
+                self.qkv_proj.weight.data.copy_(qkv_weight_tp)
+            
+            # 2. 加载并拆分 QKV 偏置 (如果存在)
+            if self.config.attention_bias:
+                q_bias_key = f"{prefix}.q_proj.bias"
+                k_bias_key = f"{prefix}.k_proj.bias"
+                v_bias_key = f"{prefix}.v_proj.bias"
+                if q_bias_key in state_dict and k_bias_key in state_dict and v_bias_key in state_dict:
+                    q_bias_global = state_dict[q_bias_key]
+                    k_bias_global = state_dict[k_bias_key]
+                    v_bias_global = state_dict[v_bias_key]
+
+                    q_bias_tp = q_bias_global.split(self.q_size, dim=0)[tp_rank]
+                    k_bias_tp = k_bias_global.split(self.kv_size, dim=0)[tp_rank]
+                    v_bias_tp = v_bias_global.split(self.kv_size, dim=0)[tp_rank]
+
+                    qkv_bias_tp = torch.cat([q_bias_tp, k_bias_tp, v_bias_tp], dim=0)
+                    self.qkv_proj.bias.data.copy_(qkv_bias_tp)
+
+            # 3. 加载并拆分输出投影 (o_proj) 权重
+            o_proj_weight_key = f"{prefix}.o_proj.weight"
+            if o_proj_weight_key in state_dict:
+                o_proj_weight_global = state_dict[o_proj_weight_key]
+                # RowParallelLinear 按列拆分，即按 dim=1 拆分
+                chunk_size = o_proj_weight_global.shape[1] // tp_size
+                o_proj_weight_tp = o_proj_weight_global.split(chunk_size, dim=1)[tp_rank]
+                self.o_proj.weight.data.copy_(o_proj_weight_tp)
+        else:
+            # 加载 AWQ 量化权重
+            # 1. 加载并拆分 QKV 权重 (qweight, zeros, scales)
+            for tensor_name in ["qweight", "zeros", "scales"]:
+                q_key = f"{prefix}.q_proj.{tensor_name}"
+                k_key = f"{prefix}.k_proj.{tensor_name}"
+                v_key = f"{prefix}.v_proj.{tensor_name}"
+
+                if q_key in state_dict and k_key in state_dict and v_key in state_dict:
+                    q_global = state_dict[q_key]
+                    k_global = state_dict[k_key]
+                    v_global = state_dict[v_key]
+
+                    # AWQ qweight/zeros/scales 的形状是 [in_features, out_features_packed]
+                    # QKVParallelLinear 将它们视为列并行，因此按 dim=1 拆分
+                    q_tp = q_global.split(self.q_size // self.qkv_proj.pack_factor, dim=1)[tp_rank]
+                    k_tp = k_global.split(self.kv_size // self.qkv_proj.pack_factor, dim=1)[tp_rank]
+                    v_tp = v_global.split(self.kv_size // self.qkv_proj.pack_factor, dim=1)[tp_rank]
+                    
+                    qkv_tp = torch.cat([q_tp, k_tp, v_tp], dim=1)
+                    getattr(self.qkv_proj, tensor_name).data.copy_(qkv_tp)
+
+            # 2. 加载 QKV 偏置 
+            if self.config.attention_bias:
+                q_bias_key = f"{prefix}.q_proj.bias"
+                k_bias_key = f"{prefix}.k_proj.bias"
+                v_bias_key = f"{prefix}.v_proj.bias"
+                if q_bias_key in state_dict and k_bias_key in state_dict and v_bias_key in state_dict:
+                    q_bias_global = state_dict[q_bias_key]
+                    k_bias_global = state_dict[k_bias_key]
+                    v_bias_global = state_dict[v_bias_key]
+
+                    q_bias_tp = q_bias_global.split(self.q_size, dim=0)[tp_rank]
+                    k_bias_tp = k_bias_global.split(self.kv_size, dim=0)[tp_rank]
+                    v_bias_tp = v_bias_global.split(self.kv_size, dim=0)[tp_rank]
+
+                    qkv_bias_tp = torch.cat([q_bias_tp, k_bias_tp, v_bias_tp], dim=0)
+                    self.qkv_proj.bias.data.copy_(qkv_bias_tp)
+
+            # 3. 加载并拆分输出投影 (o_proj) 权重 (qweight, zeros, scales)
+            for tensor_name in ["qweight", "zeros", "scales"]:
+                o_proj_key = f"{prefix}.o_proj.{tensor_name}"
+                if o_proj_key in state_dict:
+                    o_proj_global = state_dict[o_proj_key]
+                    # RowParallelLinear 按行拆分，即按 dim=0 拆分
+                    chunk_size = o_proj_global.shape[0] // tp_size
+                    o_proj_tp = o_proj_global.split(chunk_size, dim=0)[tp_rank]
+                    getattr(self.o_proj, tensor_name).data.copy_(o_proj_tp)
 
         # 4. 加载 QK Norm 权重 (如果存在)
         if self.use_qk_norm:
