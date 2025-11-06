@@ -1,7 +1,7 @@
 import torch
 
 from transformers import AutoConfig, Glm4MoeConfig
-from nanovllm.models.glm4_moe.attention import Glm4MoeAttention
+from nanovllm.models.glm4_moe.attention_new import Glm4MoeAttention
 
 def main():
     torch.manual_seed(42)
@@ -10,18 +10,21 @@ def main():
 
     # init_distributed_environment(world_size=1, rank=0)
 
-    model = "/data/model/ZhipuAI/GLM-4.5-Air"
-    # model = "/data/model/QuantTrio/GLM-4.6-AWQ"
+    # model = "/data/model/ZhipuAI/GLM-4.5-Air"
+    model = "/data/model/QuantTrio/GLM-4.6-AWQ"
 
 
-
+    
     # model_index_file = f"{model}/model.safetensors.index.json" #question
     config = AutoConfig.from_pretrained(model)
+    quant_config = config.quantization_config
     #config = Glm4MoeConfig(config)
-    # print(f"{config=}")
+    print(f"{config=}")
+    # print(f"{quant_config=}")
     
     prefix = "model.layers.1.self_attn"
-    attn = Glm4MoeAttention(config, prefix=prefix)
+    # attn = Glm4MoeAttention(config, prefix=prefix)
+    attn = Glm4MoeAttention(config, prefix=prefix, quant_config=quant_config)
 
     attn.load_weights(model, prefix)
     device = torch.device("cuda")
@@ -32,7 +35,9 @@ def main():
     tensor_path = os.path.join(sample_path, f"{prefix}_0.safetensors")
     loaded_tensor = safetensors.torch.load_file(tensor_path)
     #hidden_states = loaded_tensor["hidden_states"].to(device=device)
-    hidden_states = torch.randn(8192, 4096, device=device, dtype=torch.float16)
+    # hidden_states = torch.randn(8192, 4096, device=device, dtype=torch.float16)
+    hidden_states = torch.randn(8192, 5120, device=device, dtype=torch.float16)
+
     positions = loaded_tensor["positions"].to(device=device)
     output_reference = loaded_tensor["output"].to(device=device)
     # print(f"{hidden_states.shape=}, {positions.shape=}")
@@ -40,7 +45,7 @@ def main():
     # print(f"{output.shape=}")
 
     #torch.testing.assert_close(output, output_reference, rtol=1e-3, atol=1e-3)
-
+    print("完成对比！")
 
 if __name__ == "__main__":
     main()

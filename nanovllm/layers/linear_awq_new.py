@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 import triton
 import triton.language as tl
+import traceback
 
 from nanovllm.distributed.parallel_state import get_tp_group
 
@@ -195,7 +196,6 @@ class LinearBase(nn.Module):
         self.tp_dim = tp_dim
         self.tp_rank = get_tp_group().rank
         self.tp_size = get_tp_group().world_size
-        
         # self.group_size = group_size
         # self.bits = bits
 
@@ -205,17 +205,15 @@ class LinearBase(nn.Module):
         self.group_size = quant_config.get("group_size", 128)
         self.bits = quant_config.get("bits", 4)
 
-        self.weight = nn.Parameter(torch.empty(
+        self.qweight = nn.Parameter(torch.empty(
             input_size,
             output_size // (32 // self.bits),
             dtype=torch.int32
         ),requires_grad=False)
-
         self.scales = nn.Parameter(torch.empty(
             input_size // self.group_size,
-            output_size
+            output_size,
         ),requires_grad=False)
-
         # qzeros: [in_features // group_size, out_features // 8]
         self.qzeros = nn.Parameter(torch.empty(
             input_size // self.group_size,
@@ -223,7 +221,7 @@ class LinearBase(nn.Module):
             dtype=torch.int32
         ),requires_grad=False)
 
-        self.weight.weight_loader = self.weight_loader
+        self.qweight.weight_loader = self.weight_loader
         self.scales.weight_loader = self.weight_loader
         self.qzeros.weight_loader = self.weight_loader
 
@@ -253,8 +251,8 @@ class ReplicatedLinear(LinearBase):
         param.data.copy_(loaded_weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        dequantized_weight = awq_dequantize_triton(self.weight, self.scales, self.qzeros)
-        return F.linear(x, dequantized_weight.T, self.bias)
+        dequantized_weight = awq_dequantize_triton(self.qweight, self.scales, self.qzeros)
+        return F.linear(x, dequantized_weight, self.bias)
 
 
 class ColumnParallelLinear(LinearBase):
@@ -275,9 +273,10 @@ class ColumnParallelLinear(LinearBase):
         start_idx = self.tp_rank * shard_size
         loaded_weight = loaded_weight.narrow(self.tp_dim, start_idx, shard_size)
         param_data.copy_(loaded_weight)
+        
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        dequantized_weight = awq_dequantize_triton(self.weight, self.scales, self.qzeros)
+        dequantized_weight = awq_dequantize_triton(self.qweight, self.scales, self.qzeros)
         return F.linear(x, dequantized_weight.T, self.bias)
 
 
@@ -336,7 +335,7 @@ class QKVParallelLinear(ColumnParallelLinear):
         param_data = param_data.narrow(self.tp_dim, shard_offset, shard_size)
         loaded_weight = loaded_weight.chunk(self.tp_size, self.tp_dim)[self.tp_rank]
         param_data.copy_(loaded_weight)
-
+        traceback.print_stack()
 
 class RowParallelLinear(LinearBase):
 
@@ -358,7 +357,7 @@ class RowParallelLinear(LinearBase):
         param_data.copy_(loaded_weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        dequantized_weight = awq_dequantize_triton(self.weight, self.scales, self.qzeros)
+        dequantized_weight = awq_dequantize_triton(self.qweight, self.scales, self.qzeros)
         y = F.linear(x, dequantized_weight.T, self.bias if self.tp_rank == 0 else None)
         if self.tp_size > 1:
             dist.all_reduce(y)
