@@ -36,7 +36,7 @@ class ModelRunner:
             model_class = Qwen3ForCausalLM
         self.model = model_class(hf_config)
         # TODO(fh): load glm4_moe model
-        # load_model(self.model, config.model)
+        load_model(self.model, config.model)
         self.sampler = Sampler()
         self.warmup_model()
         self.allocate_kv_cache()

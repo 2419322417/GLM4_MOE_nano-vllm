@@ -15,7 +15,7 @@ def main():
     # config = Glm4MoeConfig(config)
     # print(f"{config=}")
 
-    prefix = "model.layers.1.self_mlp"
+    prefix = ""
     moe = Glm4MoeMoE(config)
     batch_size = 1 
     seq_len = 4
