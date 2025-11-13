@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from transformers.models.glm4_moe import Glm4MoeConfig
 
-from .attention import Glm4MoeAttention
+from .attention_new import Glm4MoeAttention
 from .moe import Glm4MoeMoE
 from .mlp import Glm4MoeMLP
 from nanovllm.layers.layernorm import RMSNorm

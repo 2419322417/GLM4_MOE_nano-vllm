@@ -279,21 +279,21 @@ class Glm4MoeAttention(nn.Module):
     ) -> torch.Tensor:
         # print(hidden_states.shape)
         #测试代码
-        import safetensors
-        import os
-        sample_path = "/data/ai_infra/debug/tensors1/rank_0"
-        tensor_path = os.path.join(sample_path, f"model.layers.0.self_attn_2.safetensors")
-        loaded_tensor = safetensors.torch.load_file(tensor_path)
-        qkv_loaded = loaded_tensor["qkv"].to(device=hidden_states.device)
-        q_loaded = loaded_tensor["q"].to(device=hidden_states.device)
-        k_loaded = loaded_tensor["k"].to(device=hidden_states.device)
+        # import safetensors
+        # import os
+        # sample_path = "/data/ai_infra/debug/tensors1/rank_0"
+        # tensor_path = os.path.join(sample_path, f"model.layers.0.self_attn_2.safetensors")
+        # loaded_tensor = safetensors.torch.load_file(tensor_path)
+        # qkv_loaded = loaded_tensor["qkv"].to(device=hidden_states.device)
+        # q_loaded = loaded_tensor["q"].to(device=hidden_states.device)
+        # k_loaded = loaded_tensor["k"].to(device=hidden_states.device)
 
         #运行forward
         qkv = self.qkv_proj(hidden_states)
-        torch.testing.assert_close(qkv, qkv_loaded, rtol=1e-2, atol=1e-2)
+        # torch.testing.assert_close(qkv, qkv_loaded, rtol=1e-2, atol=1e-2)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        torch.testing.assert_close(q, q_loaded, rtol=1e-2, atol=1e-2)
-        torch.testing.assert_close(k, k_loaded, rtol=1e-2, atol=1e-2)
+        # torch.testing.assert_close(q, q_loaded, rtol=1e-2, atol=1e-2)
+        # torch.testing.assert_close(k, k_loaded, rtol=1e-2, atol=1e-2)
         # print(q.shape,k.shape,v.shape)
         if self.use_qk_norm:
             q = self.q_norm(q.view(-1, self.num_heads, self.head_dim))

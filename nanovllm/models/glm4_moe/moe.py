@@ -67,6 +67,12 @@ class Glm4MoE(nn.Module):
         else:
             self.shared_experts = None
 
+    def load_weights(self, model_path: str, prefix: str):
+        pass
+
+    def load_weights(self, model_path: str, prefix: str):
+        pass
+
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
          router_logits = self.gate(hidden_states)
 
