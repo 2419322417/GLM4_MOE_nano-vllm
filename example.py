@@ -4,28 +4,29 @@ from transformers import AutoTokenizer
 
 
 def main():
-    path = os.path.expanduser("/data/model/Qwen/Qwen3-0.6B/")
+    path = os.path.expanduser("/data/model/Qwen/Qwen3-0.6B")
     tokenizer = AutoTokenizer.from_pretrained(path)
     llm = LLM(path, enforce_eager=True, tensor_parallel_size=1)
 
-    sampling_params = SamplingParams(temperature=0.6, max_tokens=256)
+    sampling_params = SamplingParams(temperature=0.6, max_tokens=512)
     prompts = [
-        "介绍你自己",
-        # "列出100以内的所有质数",
+         "什么是人工智能？"
     ]
+
     prompts = [
-        tokenizer.apply_chat_template(
+        tokenizer.apply_chat_template(   
             [{"role": "user", "content": prompt}],
             tokenize=False,
-            add_generation_prompt=True,
+            add_generation_prompt=True,   
         )
         for prompt in prompts
     ]
     outputs = llm.generate(prompts, sampling_params)
+
     for prompt, output in zip(prompts, outputs):
         print("\n")
-        print(f"Prompt: {prompt!r}")
-        print(f"Completion: {output['text']!r}")
+        print(f"Prompt: {prompt}")
+        print(f"Completion: {output['text']}")
 
 
 if __name__ == "__main__":

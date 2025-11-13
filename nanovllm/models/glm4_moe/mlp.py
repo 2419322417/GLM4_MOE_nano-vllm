@@ -2,7 +2,7 @@ import torch.nn as nn
 from transformers.models.glm4_moe import Glm4MoeConfig
 
 class Glm4MoeMLP(nn.Module):
-    def __init__(self, config: Glm4MoeConfig):
+    def __init__(self, config: Glm4MoeConfig,intermediate_size: int = None):
         super().__init__()
         # self.gate_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
         # self.up_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
