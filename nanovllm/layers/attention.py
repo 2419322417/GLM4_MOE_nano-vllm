@@ -33,7 +33,9 @@ def store_kvcache_kernel(
 def store_kvcache(key: torch.Tensor, value: torch.Tensor, k_cache: torch.Tensor, v_cache: torch.Tensor, slot_mapping: torch.Tensor):
     N, num_heads, head_dim = key.shape
     D = num_heads * head_dim
-    assert key.stride(-1) == 1 and value.stride(-1) == 1
+    # print(N)
+    # print(slot_mapping.numel())
+    assert key.stride(-1) == 1 and value.stride(-1) == 1 
     assert key.stride(1) == head_dim and value.stride(1) == head_dim
     assert k_cache.stride(1) == D and v_cache.stride(1) == D
     assert slot_mapping.numel() == N
@@ -62,9 +64,15 @@ class Attention(nn.Module):
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
         context = get_context()
         k_cache, v_cache = self.k_cache, self.v_cache
+        # print(f"k_cache shape: {k_cache.shape}, v_cache shape: {v_cache.shape}")
         if k_cache.numel() and v_cache.numel():
+            # print(k.shape)
+            # print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+            # print(context.slot_mapping)
+            # print(context.context_lens)
+            # print(context.block_tables)
+            # print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
             store_kvcache(k, v, k_cache, v_cache, context.slot_mapping)
-
         # print(f"q shape: {q.shape}, k shape: {k.shape}, v shape: {v.shape}")
         # print(f"k_cache shape: {k_cache.shape}, v_cache shape: {v_cache.shape}")
         # q shape: torch.Size([28, 16, 128]), k shape: torch.Size([28, 8, 128]), v shape: torch.Size([28, 8, 128])
@@ -74,16 +82,33 @@ class Attention(nn.Module):
         # gqa_k_cache = k_cache.unsqueeze(2).expand(-1, -1, 2, -1).reshape(*q.shape)
         # gqa_v_cache = v_cache.unsqueeze(2).expand(-1, -1, 2, -1).reshape(*q.shape)
         # score = torch.einsum("shd, shd -> hss")
-        # if context.is_prefill:
-        #     if context.block_tables is not None:    # prefix cache
-        #         k, v = k_cache, v_cache
-        #     o = flash_attn_varlen_func(q, k, v,
-        #                                max_seqlen_q=context.max_seqlen_q, cu_seqlens_q=context.cu_seqlens_q,
-        #                                max_seqlen_k=context.max_seqlen_k, cu_seqlens_k=context.cu_seqlens_k,
-        #                                softmax_scale=self.scale, causal=True, block_table=context.block_tables)
-        # else:    # decode
-        #     o = flash_attn_with_kvcache(q.unsqueeze(1), k_cache, v_cache,
-        #                                 cache_seqlens=context.context_lens, block_table=context.block_tables,
-        #                                 softmax_scale=self.scale, causal=True)
-        o = torch.randn(*q.shape, device=q.device, dtype=q.dtype)
+        if context.is_prefill:
+            if context.block_tables is not None:    # prefix cache
+                k, v = k_cache, v_cache
+            # print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+            # print(context.slot_mapping)
+            # print(context.context_lens)
+            # print(context.block_tables)
+            # print(context.max_seqlen_q)
+            # print(context.cu_seqlens_q)
+            # print(context.max_seqlen_k)
+            # print(context.cu_seqlens_k)
+            # print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+            o = flash_attn_varlen_func(q, k, v,
+                                       max_seqlen_q=context.max_seqlen_q, cu_seqlens_q=context.cu_seqlens_q,
+                                       max_seqlen_k=context.max_seqlen_k, cu_seqlens_k=context.cu_seqlens_k,
+                                       softmax_scale=self.scale, causal=True, block_table=context.block_tables)
+        else:
+            # print(q.shape)
+            # print(k_cache.shape)
+            # print(v_cache.shape)
+            o = flash_attn_with_kvcache(q.unsqueeze(1), k_cache, v_cache,
+                                        cache_seqlens=context.context_lens, block_table=context.block_tables,
+                                        softmax_scale=self.scale, causal=True)
+        # o = torch.randn(*q.shape, device=q.device, dtype=q.dtype)
         return o
+    def load_kv_cache(self, kv_cache: dict):
+        self.k_cache = torch.zeros(443, 256, 8, 128)
+        self.v_cache = torch.zeros(443, 256, 8, 128)
+        # self.k_cache = kv_cache["k_cache"]
+        # self.v_cache = kv_cache["v_cache"]

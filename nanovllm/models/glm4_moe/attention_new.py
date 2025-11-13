@@ -47,7 +47,7 @@ class Glm4MoeAttention(nn.Module):
             self.total_num_kv_heads,
             bias=self.qkv_bias,
             )
-        
+            # print("Using non-quantized QKVParallelLinear")
         
             self.o_proj = RowParallelLinear(
                 self.total_num_heads * self.head_dim, 
@@ -65,7 +65,7 @@ class Glm4MoeAttention(nn.Module):
             bias=self.qkv_bias,
             quant_config=quant_config,
             )
-        
+            # print("Using AWQ quantized QKVParallelLinear")
         
             self.o_proj = RowParallelLinear(
                 self.total_num_heads * self.head_dim, 
@@ -159,7 +159,9 @@ class Glm4MoeAttention(nn.Module):
                 q_weight_tp = q_weight_global.split(self.q_size, dim=0)[tp_rank]
                 k_weight_tp = k_weight_global.split(self.kv_size, dim=0)[tp_rank]
                 v_weight_tp = v_weight_global.split(self.kv_size, dim=0)[tp_rank]
-
+                # print(f"q_weight_tp.shape: {q_weight_tp.shape}")
+                # print(f"k_weight_tp.shape: {k_weight_tp.shape}")
+                # print(f"v_weight_tp.shape: {v_weight_tp.shape}")    
                 # 拼接成当前 rank 所需的 QKV 权重
                 qkv_weight_tp = torch.cat([q_weight_tp, k_weight_tp, v_weight_tp], dim=0)
                 # print(qkv_weight_tp.shape)
@@ -188,8 +190,11 @@ class Glm4MoeAttention(nn.Module):
             if o_proj_weight_key in state_dict:
                 o_proj_weight_global = state_dict[o_proj_weight_key]
                 # RowParallelLinear 按列拆分，即按 dim=1 拆分
+                # print(o_proj_weight_global.shape)
                 chunk_size = o_proj_weight_global.shape[1] // tp_size
                 o_proj_weight_tp = o_proj_weight_global.split(chunk_size, dim=1)[tp_rank]
+                # print(f"o_proj_weight_tp.shape: {o_proj_weight_tp.shape}")
+                # print(self.o_proj.weight.shape)
                 self.o_proj.weight.data.copy_(o_proj_weight_tp)
         else:
             # 加载 AWQ 量化权重
@@ -272,10 +277,24 @@ class Glm4MoeAttention(nn.Module):
         hidden_states: torch.Tensor,
         positions: torch.Tensor,
     ) -> torch.Tensor:
-        print(hidden_states.shape)
-        qkv = self.qkv_proj(hidden_states)
-        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        # print(hidden_states.shape)
+        #测试代码
+        import safetensors
+        import os
+        sample_path = "/data/ai_infra/debug/tensors1/rank_0"
+        tensor_path = os.path.join(sample_path, f"model.layers.0.self_attn_2.safetensors")
+        loaded_tensor = safetensors.torch.load_file(tensor_path)
+        qkv_loaded = loaded_tensor["qkv"].to(device=hidden_states.device)
+        q_loaded = loaded_tensor["q"].to(device=hidden_states.device)
+        k_loaded = loaded_tensor["k"].to(device=hidden_states.device)
 
+        #运行forward
+        qkv = self.qkv_proj(hidden_states)
+        torch.testing.assert_close(qkv, qkv_loaded, rtol=1e-2, atol=1e-2)
+        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        torch.testing.assert_close(q, q_loaded, rtol=1e-2, atol=1e-2)
+        torch.testing.assert_close(k, k_loaded, rtol=1e-2, atol=1e-2)
+        # print(q.shape,k.shape,v.shape)
         if self.use_qk_norm:
             q = self.q_norm(q.view(-1, self.num_heads, self.head_dim))
             k = self.k_norm(k.view(-1, self.num_kv_heads, self.head_dim))
@@ -285,9 +304,12 @@ class Glm4MoeAttention(nn.Module):
             
         v = v.view(-1, self.num_kv_heads, self.head_dim)
         
-        print(q.shape,k.shape,v.shape)
+        # print(q.shape,k.shape,v.shape)
         q, k = self.rotary_emb(positions, q, k)
         o = self.attn(q, k, v)
         output = self.o_proj(o.flatten(1, -1))
         return output
         #return hidden_states
+        
+    def load_kv_cache(self, kv_cache: dict):
+        self.attn.load_kv_cache(kv_cache)

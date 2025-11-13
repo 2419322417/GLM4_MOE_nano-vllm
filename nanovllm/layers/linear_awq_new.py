@@ -251,7 +251,7 @@ class ReplicatedLinear(LinearBase):
         param.data.copy_(loaded_weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        dequantized_weight = awq_dequantize_triton(self.qweight, self.scales, self.qzeros)
+        dequantized_weight = awq_dequantize_triton(self.qweight, self.scales, self.qzeros).T.contiguous()
         return F.linear(x, dequantized_weight, self.bias)
 
 
@@ -276,8 +276,8 @@ class ColumnParallelLinear(LinearBase):
         
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        dequantized_weight = awq_dequantize_triton(self.qweight, self.scales, self.qzeros)
-        return F.linear(x, dequantized_weight.T, self.bias)
+        dequantized_weight = awq_dequantize_triton(self.qweight, self.scales, self.qzeros).T.contiguous()
+        return F.linear(x, dequantized_weight, self.bias)
 
 
 class MergedColumnParallelLinear(ColumnParallelLinear):
@@ -357,8 +357,8 @@ class RowParallelLinear(LinearBase):
         param_data.copy_(loaded_weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        dequantized_weight = awq_dequantize_triton(self.qweight, self.scales, self.qzeros)
-        y = F.linear(x, dequantized_weight.T, self.bias if self.tp_rank == 0 else None)
+        dequantized_weight = awq_dequantize_triton(self.qweight, self.scales, self.qzeros).T.contiguous()
+        y = F.linear(x, dequantized_weight, self.bias if self.tp_rank == 0 else None)
         if self.tp_size > 1:
             dist.all_reduce(y)
         return y
