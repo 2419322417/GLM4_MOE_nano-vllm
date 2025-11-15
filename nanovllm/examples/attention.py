@@ -26,15 +26,16 @@ def main():
     # print(config.head_dim) 128
     prefix = "model.layers.0.self_attn"
     attn = Glm4MoeAttention(config, prefix=prefix)
+    #print("Attention模块创建完成")
     # attn = Glm4MoeAttention(config, prefix=prefix, quant_config=quant_config)
 
-    load_weight=attn.load_weights(model, prefix)
-
+    attn.load_weights(model, prefix)
+    #print("Attention模块权重加载完成")
     device = torch.device("cuda")
     #device = next(attn.parameters()).device
     import safetensors
     import os
-    sample_path = "/data/ai_infra/debug/tensors1/rank_0"
+    sample_path = "/data/ai_infra/debug/tensors3/rank_0"
     # sample_path = "/data/ai_infra/debug/glm4-6-awq-tensors"
     tensor_path = os.path.join(sample_path, f"{prefix}_2.safetensors")
     # tensor_path = os.path.join(sample_path, f"{prefix}_0.safetensors")
@@ -61,7 +62,7 @@ def main():
     set_context(True,cu_seqlens_q=cu_seqlens_q, cu_seqlens_k=cu_seqlens_k, max_seqlen_k=max_seqlen_k, max_seqlen_q=max_seqlen_q, slot_mapping=slot_mapping, context_lens=context_lens, block_tables=block_tables)
     output = attn(hidden_states, positions)
     # print(f"{output.shape=}")
-    torch.testing.assert_close(output, output_reference, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(output, output_reference, rtol=1e-3, atol=1e-3)
     # torch.testing.assert_close(output, output_reference, rtol=1e-3, atol=1e-3)
     print("完成对比！")
 
