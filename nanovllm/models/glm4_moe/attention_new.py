@@ -47,6 +47,11 @@ class Glm4MoeAttention(nn.Module):
             self.total_num_kv_heads,
             bias=self.qkv_bias,
             )
+            #print("现在开始线性层计算")
+            #self.qkv_proj.state_dict()
+            # print(f"{self.qkv_proj.state_dict()}")
+            # print(f"{self.qkv_proj.weight.shape}")
+            # assert False
             # print("Using non-quantized QKVParallelLinear")
         
             self.o_proj = RowParallelLinear(
@@ -89,6 +94,7 @@ class Glm4MoeAttention(nn.Module):
             max_position=config.max_position_embeddings,
             base=config.rope_theta,
             rope_scaling=rope_scaling,
+            partial_rotary_factor=partial_rotary_factor,
         )
         cache_config=None
         # quant_config=None
@@ -279,22 +285,53 @@ class Glm4MoeAttention(nn.Module):
     ) -> torch.Tensor:
         # print(hidden_states.shape)
         #测试代码
-        # import safetensors
-        # import os
-        # sample_path = "/data/ai_infra/debug/tensors1/rank_0"
-        # tensor_path = os.path.join(sample_path, f"model.layers.0.self_attn_2.safetensors")
-        # loaded_tensor = safetensors.torch.load_file(tensor_path)
+        import safetensors
+        import os
+        sample_path = "/data/ai_infra/debug/tensors3/rank_0"
+        tensor_path = os.path.join(sample_path, f"model.layers.0.self_attn_2.safetensors")
+        loaded_tensor = safetensors.torch.load_file(tensor_path)
         # qkv_loaded = loaded_tensor["qkv"].to(device=hidden_states.device)
         # q_loaded = loaded_tensor["q"].to(device=hidden_states.device)
         # k_loaded = loaded_tensor["k"].to(device=hidden_states.device)
+        # qkv_weight_loaded = loaded_tensor["qkv_weight"].to(device=hidden_states.device)
+        # qkv_weight_loaded = qkv_weight_loaded.t().contiguous()
+        # print(f"{hidden_states.shape=}")
+        # print(f"{self.qkv_proj.weight.shape=}")
+        # print(f"{qkv_weight_loaded.shape=}")
 
+        # torch.testing.assert_close(self.qkv_proj.weight, qkv_weight_loaded, rtol=1e-3, atol=1e-3)
+        # hidden_states_loaded = loaded_tensor["hidden_states"].to(device=hidden_states.device)
+        # torch.testing.assert_close(hidden_states, hidden_states_loaded, rtol=1e-3, atol=1e-3)
+        # print("QKV权重和hidden_states对比完成")
+        # assert False
         #运行forward
         qkv = self.qkv_proj(hidden_states)
+
+        # with safetensors.safe_open("/data/model/ZhipuAI/GLM-4.5-Air/model-00001-of-00047.safetensors", "pt", "cpu") as f:
+        #     q_bias = f.get_tensor('model.layers.0.self_attn.q_proj.bias')
+        #     k_bias = f.get_tensor('model.layers.0.self_attn.k_proj.bias')
+        #     v_bias = f.get_tensor('model.layers.0.self_attn.v_proj.bias')
+        #     print(f"{q_bias.shape=}")
+        #     print(f"{k_bias.shape=}")
+        #     print(f"{v_bias.shape=}")
+        #     qkv_bias_ref = torch.cat([q_bias, k_bias, v_bias]).to(device=hidden_states.device, dtype=torch.float16)
+
+        # torch.testing.assert_close(qkv_bias_ref, self.qkv_proj.bias, atol=1e-3, rtol=1e-3)
+
+        # qkv_ref = torch.nn.functional.linear(hidden_states, self.qkv_proj.weight, self.qkv_proj.bias)
+
+        # torch.testing.assert_close(qkv_ref, qkv, atol=1e-3, rtol=1e-3)
+
+        # torch.testing.assert_close(qkv_ref, qkv_loaded)
+
         # torch.testing.assert_close(qkv, qkv_loaded, rtol=1e-2, atol=1e-2)
+        # print("QKV投影结果对比完成")
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         # torch.testing.assert_close(q, q_loaded, rtol=1e-2, atol=1e-2)
         # torch.testing.assert_close(k, k_loaded, rtol=1e-2, atol=1e-2)
         # print(q.shape,k.shape,v.shape)
+        # assert False
+        
         if self.use_qk_norm:
             q = self.q_norm(q.view(-1, self.num_heads, self.head_dim))
             k = self.k_norm(k.view(-1, self.num_kv_heads, self.head_dim))
@@ -302,14 +339,30 @@ class Glm4MoeAttention(nn.Module):
             q = q.view(-1, self.num_heads, self.head_dim)
             k = k.view(-1, self.num_kv_heads, self.head_dim)
             
-        v = v.view(-1, self.num_kv_heads, self.head_dim)
-        
+        v = v.view(-1, self.num_kv_heads, self.head_dim)        
         # print(q.shape,k.shape,v.shape)
+
+        # positions_loaded = loaded_tensor["positions"].to(device=hidden_states.device)
+        # torch.testing.assert_close(positions, positions_loaded, rtol=1e-2, atol=1e-2)
+        # print("positions对比完成")
+        # assert False  
         q, k = self.rotary_emb(positions, q, k)
+        # q = q.flatten(1, -1)
+        # k = k.flatten(1, -1)
+        # print(q.shape,k.shape,v.shape)
+        # q_pe_loaded = loaded_tensor["q_pe"].to(device=hidden_states.device)
+        # k_pe_loaded = loaded_tensor["k_pe"].to(device=hidden_states.device)
+        # torch.testing.assert_close(q, q_pe_loaded, rtol=1e-2, atol=1e-2)
+        # torch.testing.assert_close(k, k_pe_loaded, rtol=1e-2, atol=1e-2)
+        # assert False
         o = self.attn(q, k, v)
-        output = self.o_proj(o.flatten(1, -1))
+        o = o.flatten(1, -1)
+        # o_loaded = loaded_tensor["attn_output"].to(device=hidden_states.device)
+        # torch.testing.assert_close(o, o_loaded, rtol=1e-2, atol=1e-2)
+        # assert False
+        output = self.o_proj(o)
         return output
         #return hidden_states
-        
+    #TODO test    
     def load_kv_cache(self, kv_cache: dict):
         self.attn.load_kv_cache(kv_cache)
