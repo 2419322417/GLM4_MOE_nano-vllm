@@ -8,7 +8,6 @@ from safetensors import safe_open
 from safetensors.torch import load_file
 
 
-
 class Glm4MoeMLP(nn.Module):
 
     def __init__(
@@ -52,84 +51,110 @@ class Glm4MoeMLP(nn.Module):
         ret_x = self.down_proj(act_x)
 
         return ret_x
-    
 
-    def load_from_model(self, model_dir: str, prefix: str):
-        """从 vLLM 导出的 safetensors 权重中加载当前 MLP 层参数"""
-        import glob
-        weight_files = sorted(glob.glob(f"{model_dir}/*.safetensors"))
-        print(f"📦 找到 {len(weight_files)} 个权重分片")
+    @torch.no_grad()
+    def forward_debug(self, x):
+        """逐步返回所有中间结果，方便和 vLLM dump 的张量逐层对齐。"""
+        # x: [B, hidden_size]
+        out = {}
+        out["x_in"] = x
 
-        # 遍历所有权重文件，找到对应层的参数
-        for wf in weight_files:
-            tensors = load_file(wf)
-            for name, tensor in tensors.items():
-                if name.startswith(prefix):
-                    if "gate_up_proj" in name:
-                        print(f"✅ 加载 {name}")
-                        self.gate_up_proj.weight.data.copy_(tensor)
-                    elif "down_proj" in name:
-                        print(f"✅ 加载 {name}")
-                        self.down_proj.weight.data.copy_(tensor)
-    
-def main():
-    """
-    使用从 vLLM 导出的 safetensors 文件验证 Glm4MoeMLP 层一致性
-    """
-    from transformers import AutoConfig, Glm4MoeConfig
+        gate_up = self.gate_up_proj(x)           # [B, 2 * intermediate]
+        out["gate_up"] = gate_up
 
-    torch.manual_seed(42)
-    torch.set_default_device("cuda")
-    torch.set_default_dtype(torch.float16)
+        # MergedColumnParallelLinear: 两个分支拼在最后一维
+        gate, up = gate_up.chunk(2, dim=-1)      # 各 [B, intermediate]
+        out["gate"] = gate
+        out["up"] = up
 
-    # -------------------------------------------------------------------------
-    # 1. 加载模型配置
-    # -------------------------------------------------------------------------
-    model = "/data/model/ZhipuAI/GLM-4.5-Air"
-    config = AutoConfig.from_pretrained(model)
-    config = Glm4MoeConfig(config)
+        # SiluAndMul: silu(gate) * up
+        gate_act = torch.nn.functional.silu(gate)
+        act_x = gate_act * up                    # [B, intermediate]
+        out["act_x"] = act_x
 
-    # -------------------------------------------------------------------------
-    # 2. 初始化要测试的 MLP 层
-    # -------------------------------------------------------------------------
-    prefix = "model.layers.1.mlp"  # 选择对应层（可以更改为其他层进行验证）
-    from transformers.models.glm4_moe.modeling_glm4_moe import Glm4MoeMLP
-    mlp = Glm4MoeMLP(
-        hidden_size=config.hidden_size,
-        intermediate_size=config.intermediate_size,
-        hidden_act = config.hidden_act,
-        prefix = prefix,
-    )
-    mlp.load_weights(model)
+        down = self.down_proj(act_x)             # [B, hidden_size]
+        out["down"] = down
+        out["ret_x"] = down                      # 和 forward 返回保持一致
 
-    # -------------------------------------------------------------------------
-    # 3. 加载 vLLM 导出的参考输入与输出
-    # -------------------------------------------------------------------------
-    import safetensors
-    sample_path = "/data/ai_infra/debug/glm4-6-awq-tensors"
-    tensor_path = os.path.join(sample_path, f"{prefix}_0.safetensors")
+        return out
 
-    if not os.path.exists(tensor_path):
-        raise FileNotFoundError(f"❌ 找不到文件: {tensor_path}")
 
-    print(f"📦 正在加载调试张量: {tensor_path}")
-    loaded_tensor = safetensors.torch.load_file(tensor_path)
+    # def load_from_model(self, model_dir: str, prefix: str):
+    #         """从 HF/GLM-4.5 权重中加载当前 MLP 层参数"""
 
-    x = loaded_tensor["x"]  # MLP输入
-    output_reference = loaded_tensor["ret_x"]  # vLLM输出（参考值）
+    #         weight_files = sorted(glob.glob(os.path.join(model_dir, "*.safetensors")))
+    #         print(f"📦 找到 {len(weight_files)} 个权重分片")
 
-    print(f"✅ 成功加载输入张量: {x.shape}")
-    print(f"✅ 成功加载输出张量: {output_reference.shape}")
+    #         gate_w = None
+    #         up_w = None
+    #         down_w = None
 
-    # -------------------------------------------------------------------------
-    # 4. 前向推理并比较结果
-    # -------------------------------------------------------------------------
-    print("🚀 开始执行前向推理...")
-    output = mlp(x)
+    #         for wf in weight_files:
+    #             with safe_open(wf, framework="pt") as f:
+    #                 for name in f.keys():
+    #                     if not name.startswith(prefix):
+    #                         continue
 
-    print("🧮 比较输出结果...")
-    torch.testing.assert_close(output, output_reference, rtol=1e-3, atol=1e-3)
-    print("✅ MLP 层输出与 vLLM 一致，验证通过！")
+    #                     tensor = f.get_tensor(name)
 
-if __name__ == "__main__":
-    main()
+    #                     if name.endswith("gate_proj.weight"):
+    #                         print(f"✅ 加载 {name} ({list(tensor.shape)})")
+    #                         gate_w = tensor  # [intermediate, hidden]
+
+    #                     elif name.endswith("up_proj.weight"):
+    #                         print(f"✅ 加载 {name} ({list(tensor.shape)})")
+    #                         up_w = tensor    # [intermediate, hidden]
+
+    #                     elif name.endswith("down_proj.weight"):
+    #                         print(f"✅ 加载 {name} ({list(tensor.shape)})")
+    #                         down_w = tensor  # [hidden, intermediate]
+
+    #         assert gate_w is not None, "gate_proj.weight 未找到"
+    #         assert up_w is not None, "up_proj.weight 未找到"
+    #         assert down_w is not None, "down_proj.weight 未找到"
+
+    #         # 🔥 拼接 gate + up -> gate_up_proj
+    #         gate_up = torch.cat([gate_w, up_w], dim=0)   # [2*intermediate, hidden]
+    #         print(f"📐 拼接后 gate_up 形状: {list(gate_up.shape)}")
+    #         print(f"📐 模块 gate_up_proj.weight 形状: {list(self.gate_up_proj.weight.shape)}")
+
+    #         assert self.gate_up_proj.weight.shape == gate_up.shape, \
+    #             f"gate_up_proj shape mismatch: module={self.gate_up_proj.weight.shape}, tensor={gate_up.shape}"
+
+    #         # ✅ 不要转置，形状已经是 [out, in]
+    #         self.gate_up_proj.weight.data.copy_(gate_up)
+
+    #         # down_proj 也直接复制，不要转置
+    #         assert self.down_proj.weight.shape == down_w.shape, \
+    #             f"down_proj shape mismatch: module={self.down_proj.weight.shape}, tensor={down_w.shape}"
+    #         self.down_proj.weight.data.copy_(down_w)
+
+    #         print("🎯 MLP 权重加载完成！")
+    def load_weights(self, state_dict: dict, prefix: str):
+        """从state_dict中加载MLP的权重（gate_proj、up_proj、down_proj）"""
+        gate_w = None
+        up_w = None
+        down_w = None
+
+        for name, tensor in state_dict.items():
+            if not name.startswith(prefix):
+                continue
+
+            if name.endswith("gate_proj.weight"):
+                gate_w = tensor
+            elif name.endswith("up_proj.weight"):
+                up_w = tensor
+            elif name.endswith("down_proj.weight"):
+                down_w = tensor
+
+        assert gate_w is not None, f"gate_proj.weight not found in prefix {prefix}"
+        assert up_w is not None, f"up_proj.weight not found in prefix {prefix}"
+        assert down_w is not None, f"down_proj.weight not found in prefix {prefix}"
+
+        # 拼接gate和up的权重到gate_up_proj
+        gate_up = torch.cat([gate_w, up_w], dim=0).to(self.gate_up_proj.weight.dtype)
+        self.gate_up_proj.weight.data.copy_(gate_up)
+
+        # 加载down_proj的权重
+        down_w = down_w.to(self.down_proj.weight.dtype)
+        self.down_proj.weight.data.copy_(down_w)
