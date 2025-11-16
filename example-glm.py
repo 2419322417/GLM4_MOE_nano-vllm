@@ -4,7 +4,7 @@ from transformers import AutoTokenizer
 
 
 def main():
-    path = os.path.expanduser("/data/model/QuantTrio/GLM-4.6-AWQ")
+    path = os.path.expanduser("/data/model/ZhipuAI/GLM-4.5-Air")
     tokenizer = AutoTokenizer.from_pretrained(path)
     llm = LLM(path, enforce_eager=True, tensor_parallel_size=1)
 
