@@ -126,7 +126,7 @@ class Glm4MoeMoE(nn.Module):
         self.shared_experts.load_weights(state_dict, shared_prefix)
         
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        print(f"输入hodden_states:{hidden_states.shape}")   #[1，4096]
+        # print(f"输入hodden_states:{hidden_states.shape}")   #[1，4096]
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
         topk_indices, topk_weights = self.gate(hidden_states)
 
@@ -150,28 +150,28 @@ class Glm4MoeMoE(nn.Module):
 
             hidden_states_e.index_add_(0, token_indices, weighted_expert_output)
         #TODO 验证共享专家，路由专家，最终输出是否正确
-        import safetensors
-        import os
-        sample_path = "/data/ai_infra/debug/tensors4/rank_0"
-        tensor_path = os.path.join(sample_path, f"model.layers.1.mlp_7.safetensors")
-        loaded_tensor = safetensors.torch.load_file(tensor_path)
+        # import safetensors
+        # import os
+        # sample_path = "/data/ai_infra/debug/tensors4/rank_0"
+        # tensor_path = os.path.join(sample_path, f"model.layers.1.mlp_7.safetensors")
+        # loaded_tensor = safetensors.torch.load_file(tensor_path)
 
         #测试专家输出是否正确
-        hidden_states_e_loaded = loaded_tensor["experts_output"].to(device=hidden_states_e.device)
-        torch.testing.assert_close(hidden_states_e, hidden_states_e_loaded, rtol=1e-2, atol=1e-2),f"专家输出不匹配"
-        print("MoE专家输出final_hidden_states形状:", hidden_states_e.shape)
+        # hidden_states_e_loaded = loaded_tensor["experts_output"].to(device=hidden_states_e.device)
+        # torch.testing.assert_close(hidden_states_e, hidden_states_e_loaded, rtol=1e-2, atol=1e-2),f"专家输出不匹配"
+        # print("MoE专家输出final_hidden_states形状:", hidden_states_e.shape)
         
         #测试共享专家输出是否正确
         b_shared_experts = self.shared_experts(hidden_states)
-        b_shared_experts_loaded = loaded_tensor["shared_output"].to(device=b_shared_experts.device)
-        torch.testing.assert_close(b_shared_experts, b_shared_experts_loaded, rtol=1e-2, atol=1e-2),f"共享专家输出不匹配"
-        print("MoE共享专家输出  final_hidden_states形状:", b_shared_experts.shape)
+        # b_shared_experts_loaded = loaded_tensor["shared_output"].to(device=b_shared_experts.device)
+        # torch.testing.assert_close(b_shared_experts, b_shared_experts_loaded, rtol=1e-2, atol=1e-2),f"共享专家输出不匹配"
+        # print("MoE共享专家输出  final_hidden_states形状:", b_shared_experts.shape)
 
-        #测试最终输出是否正确
+        # #测试最终输出是否正确
         hidden_states = hidden_states_e + b_shared_experts
-        hidden_states_loaded = loaded_tensor["final_hidden_states"].to(device=hidden_states.device)
-        torch.testing.assert_close(hidden_states, hidden_states_loaded, rtol=1e-2, atol=1e-2),f"最终输出不匹配"
+        # hidden_states_loaded = loaded_tensor["final_hidden_states"].to(device=hidden_states.device)
+        # torch.testing.assert_close(hidden_states, hidden_states_loaded, rtol=1e-2, atol=1e-2),f"最终输出不匹配"
 
-        print("输出hidden_states形状:", hidden_states.shape)
+        # print("输出hidden_states形状:", hidden_states.shape)
         return hidden_states        #[1, 4096]
 
