@@ -32,7 +32,7 @@ def main():
 
     # 创建伪造的输入张量以进行测试
     batch_size = 1
-    num_tokens = 4096
+    num_tokens = 4
     hidden_states = torch.randn(
         batch_size * num_tokens, 
         config.hidden_size, 

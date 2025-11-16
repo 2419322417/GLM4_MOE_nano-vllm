@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 from transformers.models.glm4_moe import Glm4MoeConfig
 
-from .attention import Glm4MoeAttention
-from .moe import Glm4MoeMoE
+from .attention_new import Glm4MoeAttention
+from .moe import Glm4MoE
 from .mlp import Glm4MoeMLP
 from nanovllm.layers.layernorm import RMSNorm
 
@@ -14,7 +14,7 @@ class Glm4MoeDecoderLayer(nn.Module):
             prefix: str = "",
             ) -> None:
         super().__init__()
-        self.self_attn = Glm4MoeAttention(config)
+        self.self_attn = Glm4MoeAttention(config, prefix = f"{prefix}.self_attn")
         layer_idx_str = prefix.split(sep=".")[-1]
         try:
             layer_idx = int(layer_idx_str)
@@ -26,7 +26,7 @@ class Glm4MoeDecoderLayer(nn.Module):
             config.n_routed_experts is not None
             and layer_idx >= config.first_k_dense_replace
         ):
-            self.mlp = Glm4MoeMoE(config, prefix=f"{prefix}.mlp")
+            self.mlp = Glm4MoE(config, prefix=f"{prefix}.mlp")
         else:
             self.mlp = Glm4MoeMLP(config, prefix=f"{prefix}.mlp")
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)

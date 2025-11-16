@@ -35,7 +35,7 @@ class Glm4MoeAttention(nn.Module):
         self.scaling = self.head_dim ** -0.5
         self.qkv_bias=config.attention_bias
 
-        # self.quant_config=config.quantization_config
+        self.quant_config=quant_config
 
         # 定义 QKV 融合投影层和输出投影层
         if quant_config is None:
@@ -46,8 +46,13 @@ class Glm4MoeAttention(nn.Module):
             self.total_num_heads,
             self.total_num_kv_heads,
             bias=self.qkv_bias,
-        )
-        
+            )
+            #print("现在开始线性层计算")
+            #self.qkv_proj.state_dict()
+            # print(f"{self.qkv_proj.state_dict()}")
+            # print(f"{self.qkv_proj.weight.shape}")
+            # assert False
+            # print("Using non-quantized QKVParallelLinear")
         
             self.o_proj = RowParallelLinear(
                 self.total_num_heads * self.head_dim, 
@@ -55,7 +60,7 @@ class Glm4MoeAttention(nn.Module):
                 bias=False
             )
         else:
-            from nanovllm.layers.linear_awq import QKVParallelLinear, RowParallelLinear
+            from nanovllm.layers.linear_awq_new import QKVParallelLinear, RowParallelLinear
             
             self.qkv_proj = QKVParallelLinear(
             self.hidden_size,
@@ -64,16 +69,14 @@ class Glm4MoeAttention(nn.Module):
             self.total_num_kv_heads,
             bias=self.qkv_bias,
             quant_config=quant_config,
-            
             )
-        
+            # print("Using AWQ quantized QKVParallelLinear")
         
             self.o_proj = RowParallelLinear(
                 self.total_num_heads * self.head_dim, 
                 self.hidden_size, 
                 bias=False,
-                quant_config=quant_config,
-                
+                quant_config=quant_config,  
             )
         
         # 根据配置决定是否使用 QK Norm
@@ -91,6 +94,7 @@ class Glm4MoeAttention(nn.Module):
             max_position=config.max_position_embeddings,
             base=config.rope_theta,
             rope_scaling=rope_scaling,
+            partial_rotary_factor=partial_rotary_factor,
         )
         cache_config=None
         # quant_config=None
@@ -143,7 +147,7 @@ class Glm4MoeAttention(nn.Module):
         tp_group = get_tp_group()
         tp_rank = tp_group.rank
         tp_size = tp_group.world_size
-        
+
         if self.quant_config is None:
 
             # 1. 加载并拆分 QKV 权重
@@ -161,11 +165,13 @@ class Glm4MoeAttention(nn.Module):
                 q_weight_tp = q_weight_global.split(self.q_size, dim=0)[tp_rank]
                 k_weight_tp = k_weight_global.split(self.kv_size, dim=0)[tp_rank]
                 v_weight_tp = v_weight_global.split(self.kv_size, dim=0)[tp_rank]
-
+                # print(f"q_weight_tp.shape: {q_weight_tp.shape}")
+                # print(f"k_weight_tp.shape: {k_weight_tp.shape}")
+                # print(f"v_weight_tp.shape: {v_weight_tp.shape}")    
                 # 拼接成当前 rank 所需的 QKV 权重
                 qkv_weight_tp = torch.cat([q_weight_tp, k_weight_tp, v_weight_tp], dim=0)
-                print(qkv_weight_tp.shape)
-                print(self.qkv_proj.weight.shape)
+                # print(qkv_weight_tp.shape)
+                # print(self.qkv_proj.weight.shape)
                 self.qkv_proj.weight.data.copy_(qkv_weight_tp)
             
             # 2. 加载并拆分 QKV 偏置 (如果存在)
@@ -190,12 +196,17 @@ class Glm4MoeAttention(nn.Module):
             if o_proj_weight_key in state_dict:
                 o_proj_weight_global = state_dict[o_proj_weight_key]
                 # RowParallelLinear 按列拆分，即按 dim=1 拆分
+                # print(o_proj_weight_global.shape)
                 chunk_size = o_proj_weight_global.shape[1] // tp_size
                 o_proj_weight_tp = o_proj_weight_global.split(chunk_size, dim=1)[tp_rank]
+                # print(f"o_proj_weight_tp.shape: {o_proj_weight_tp.shape}")
+                # print(self.o_proj.weight.shape)
                 self.o_proj.weight.data.copy_(o_proj_weight_tp)
         else:
             # 加载 AWQ 量化权重
             # 1. 加载并拆分 QKV 权重 (qweight, zeros, scales)
+            bits = self.quant_config["bits"]
+            pack_factor = 32 // bits 
             for tensor_name in ["qweight", "zeros", "scales"]:
                 q_key = f"{prefix}.q_proj.{tensor_name}"
                 k_key = f"{prefix}.k_proj.{tensor_name}"
@@ -206,13 +217,18 @@ class Glm4MoeAttention(nn.Module):
                     k_global = state_dict[k_key]
                     v_global = state_dict[v_key]
 
-                    # AWQ qweight/zeros/scales 的形状是 [in_features, out_features_packed]
-                    # QKVParallelLinear 将它们视为列并行，因此按 dim=1 拆分
-                    q_tp = q_global.split(self.q_size // self.qkv_proj.pack_factor, dim=1)[tp_rank]
-                    k_tp = k_global.split(self.kv_size // self.qkv_proj.pack_factor, dim=1)[tp_rank]
-                    v_tp = v_global.split(self.kv_size // self.qkv_proj.pack_factor, dim=1)[tp_rank]
-                    
+                    if tp_size > 1:
+                        # AWQ qweight/zeros/scales 的形状是 [in_features, out_features_packed]
+                        # QKVParallelLinear 将它们视为列并行，因此按 dim=1 拆分
+                        q_tp = q_global.split(self.q_size // pack_factor, dim=1)[tp_rank]
+                        k_tp = k_global.split(self.kv_size // pack_factor, dim=1)[tp_rank]
+                        v_tp = v_global.split(self.kv_size // pack_factor, dim=1)[tp_rank]
+                    else:
+                        q_tp, k_tp, v_tp = q_global, k_global, v_global
+  
                     qkv_tp = torch.cat([q_tp, k_tp, v_tp], dim=1)
+                    # print(self.qkv_proj.qweight.shape)
+                    # print(qkv_tp.shape)
                     getattr(self.qkv_proj, tensor_name).data.copy_(qkv_tp)
 
             # 2. 加载 QKV 偏置 
@@ -225,9 +241,14 @@ class Glm4MoeAttention(nn.Module):
                     k_bias_global = state_dict[k_bias_key]
                     v_bias_global = state_dict[v_bias_key]
 
-                    q_bias_tp = q_bias_global.split(self.q_size, dim=0)[tp_rank]
-                    k_bias_tp = k_bias_global.split(self.kv_size, dim=0)[tp_rank]
-                    v_bias_tp = v_bias_global.split(self.kv_size, dim=0)[tp_rank]
+                    if tp_size > 1:
+                        q_bias_tp = q_bias_global.split(self.q_size, dim=0)[tp_rank]
+                        k_bias_tp = k_bias_global.split(self.kv_size, dim=0)[tp_rank]
+                        v_bias_tp = v_bias_global.split(self.kv_size, dim=0)[tp_rank]
+                    else:
+                        q_bias_tp = q_bias_global
+                        k_bias_tp = k_bias_global
+                        v_bias_tp = v_bias_global
 
                     qkv_bias_tp = torch.cat([q_bias_tp, k_bias_tp, v_bias_tp], dim=0)
                     self.qkv_proj.bias.data.copy_(qkv_bias_tp)
@@ -237,9 +258,14 @@ class Glm4MoeAttention(nn.Module):
                 o_proj_key = f"{prefix}.o_proj.{tensor_name}"
                 if o_proj_key in state_dict:
                     o_proj_global = state_dict[o_proj_key]
-                    # RowParallelLinear 按行拆分，即按 dim=0 拆分
-                    chunk_size = o_proj_global.shape[0] // tp_size
-                    o_proj_tp = o_proj_global.split(chunk_size, dim=0)[tp_rank]
+                    if tp_size > 1:
+                        # RowParallelLinear 按行拆分，即按 dim=0 拆分
+                        chunk_size = o_proj_global.shape[0] // tp_size
+                        o_proj_tp = o_proj_global.split(chunk_size, dim=0)[tp_rank]
+                    else:
+                        o_proj_tp = o_proj_global
+                    # print(f"{tensor_name} shape: {o_proj_tp.shape}")
+                    # print(f"{getattr(self.o_proj, tensor_name).shape=}")
                     getattr(self.o_proj, tensor_name).data.copy_(o_proj_tp)
 
         # 4. 加载 QK Norm 权重 (如果存在)
@@ -257,9 +283,55 @@ class Glm4MoeAttention(nn.Module):
         hidden_states: torch.Tensor,
         positions: torch.Tensor,
     ) -> torch.Tensor:
-        qkv = self.qkv_proj(hidden_states)
-        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        # print(hidden_states.shape)
+        #测试代码
+        import safetensors
+        import os
+        sample_path = "/data/ai_infra/debug/tensors3/rank_0"
+        tensor_path = os.path.join(sample_path, f"model.layers.0.self_attn_2.safetensors")
+        loaded_tensor = safetensors.torch.load_file(tensor_path)
+        # qkv_loaded = loaded_tensor["qkv"].to(device=hidden_states.device)
+        # q_loaded = loaded_tensor["q"].to(device=hidden_states.device)
+        # k_loaded = loaded_tensor["k"].to(device=hidden_states.device)
+        # qkv_weight_loaded = loaded_tensor["qkv_weight"].to(device=hidden_states.device)
+        # qkv_weight_loaded = qkv_weight_loaded.t().contiguous()
+        # print(f"{hidden_states.shape=}")
+        # print(f"{self.qkv_proj.weight.shape=}")
+        # print(f"{qkv_weight_loaded.shape=}")
 
+        # torch.testing.assert_close(self.qkv_proj.weight, qkv_weight_loaded, rtol=1e-3, atol=1e-3)
+        # hidden_states_loaded = loaded_tensor["hidden_states"].to(device=hidden_states.device)
+        # torch.testing.assert_close(hidden_states, hidden_states_loaded, rtol=1e-3, atol=1e-3)
+        # print("QKV权重和hidden_states对比完成")
+        # assert False
+        #运行forward
+        qkv = self.qkv_proj(hidden_states)
+
+        # with safetensors.safe_open("/data/model/ZhipuAI/GLM-4.5-Air/model-00001-of-00047.safetensors", "pt", "cpu") as f:
+        #     q_bias = f.get_tensor('model.layers.0.self_attn.q_proj.bias')
+        #     k_bias = f.get_tensor('model.layers.0.self_attn.k_proj.bias')
+        #     v_bias = f.get_tensor('model.layers.0.self_attn.v_proj.bias')
+        #     print(f"{q_bias.shape=}")
+        #     print(f"{k_bias.shape=}")
+        #     print(f"{v_bias.shape=}")
+        #     qkv_bias_ref = torch.cat([q_bias, k_bias, v_bias]).to(device=hidden_states.device, dtype=torch.float16)
+
+        # torch.testing.assert_close(qkv_bias_ref, self.qkv_proj.bias, atol=1e-3, rtol=1e-3)
+
+        # qkv_ref = torch.nn.functional.linear(hidden_states, self.qkv_proj.weight, self.qkv_proj.bias)
+
+        # torch.testing.assert_close(qkv_ref, qkv, atol=1e-3, rtol=1e-3)
+
+        # torch.testing.assert_close(qkv_ref, qkv_loaded)
+
+        # torch.testing.assert_close(qkv, qkv_loaded, rtol=1e-2, atol=1e-2)
+        # print("QKV投影结果对比完成")
+        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        # torch.testing.assert_close(q, q_loaded, rtol=1e-2, atol=1e-2)
+        # torch.testing.assert_close(k, k_loaded, rtol=1e-2, atol=1e-2)
+        # print(q.shape,k.shape,v.shape)
+        # assert False
+        
         if self.use_qk_norm:
             q = self.q_norm(q.view(-1, self.num_heads, self.head_dim))
             k = self.k_norm(k.view(-1, self.num_kv_heads, self.head_dim))
@@ -267,10 +339,30 @@ class Glm4MoeAttention(nn.Module):
             q = q.view(-1, self.num_heads, self.head_dim)
             k = k.view(-1, self.num_kv_heads, self.head_dim)
             
-        v = v.view(-1, self.num_kv_heads, self.head_dim)
-        
+        v = v.view(-1, self.num_kv_heads, self.head_dim)        
+        # print(q.shape,k.shape,v.shape)
+
+        # positions_loaded = loaded_tensor["positions"].to(device=hidden_states.device)
+        # torch.testing.assert_close(positions, positions_loaded, rtol=1e-2, atol=1e-2)
+        # print("positions对比完成")
+        # assert False  
         q, k = self.rotary_emb(positions, q, k)
+        # q = q.flatten(1, -1)
+        # k = k.flatten(1, -1)
+        # print(q.shape,k.shape,v.shape)
+        # q_pe_loaded = loaded_tensor["q_pe"].to(device=hidden_states.device)
+        # k_pe_loaded = loaded_tensor["k_pe"].to(device=hidden_states.device)
+        # torch.testing.assert_close(q, q_pe_loaded, rtol=1e-2, atol=1e-2)
+        # torch.testing.assert_close(k, k_pe_loaded, rtol=1e-2, atol=1e-2)
+        # assert False
         o = self.attn(q, k, v)
-        output = self.o_proj(o.flatten(1, -1))
+        o = o.flatten(1, -1)
+        # o_loaded = loaded_tensor["attn_output"].to(device=hidden_states.device)
+        # torch.testing.assert_close(o, o_loaded, rtol=1e-2, atol=1e-2)
+        # assert False
+        output = self.o_proj(o)
         return output
         #return hidden_states
+    #TODO test    
+    def load_kv_cache(self, kv_cache: dict):
+        self.attn.load_kv_cache(kv_cache)
