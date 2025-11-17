@@ -16,7 +16,10 @@ class Glm4MoeModel(nn.Module):
         super().__init__()
         self.embed_tokens = VocabParallelEmbedding(config.vocab_size, config.hidden_size)
         # self.layers = nn.ModuleList([Qwen3DecoderLayer(config) for _ in range(config.num_hidden_layers)])
-        self.layers = nn.ModuleList([Glm4MoeDecoderLayer(config,prefix=f"model.layers.{i}") for i in range(config.num_hidden_layers)])
+        # self.layers = nn.ModuleList([Glm4MoeDecoderLayer(config,prefix=f"model.layers.{i}") for i in range(config.num_hidden_layers)])
+        #TODO: 临时只加载2层，方便调试
+        num_layers_to_load = 2
+        self.layers = nn.ModuleList([Glm4MoeDecoderLayer(config,prefix=f"model.layers.{i}") for i in range(num_layers_to_load)])
         #self.layers = nn.ModuleList([])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
@@ -83,6 +86,7 @@ class Glm4MoeForCausalLM(nn.Module):
     def __init__(self, config: Glm4MoeConfig):
         super().__init__()
         self.model = Glm4MoeModel(config)
+        self.config = config
 
         quant_config = None
         self.quant_config = quant_config
