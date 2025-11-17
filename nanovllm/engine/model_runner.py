@@ -32,11 +32,12 @@ class ModelRunner:
         model_class = None
         if hf_config.model_type == "glm4_moe":
             model_class = Glm4MoeForCausalLM
+            self.model = model_class(hf_config)
+            self.model.load_weights(config.model)
         else:
             model_class = Qwen3ForCausalLM
-        self.model = model_class(hf_config)
-        # TODO(fh): load glm4_moe model
-        load_model(self.model, config.model)
+            self.model = model_class(hf_config)
+            load_model(self.model, config.model)
         self.sampler = Sampler()
         self.warmup_model()
         self.allocate_kv_cache()
